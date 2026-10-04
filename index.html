@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpotiFree - Localhost Player</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #000; color: #fff; font-family: system-ui, -apple-system, sans-serif; user-select: none; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #121212; }
+        ::-webkit-scrollbar-thumb { background: #282828; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3e3e3e; }
+        input[type="range"] { accent-color: #1db954; cursor: pointer; }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+    <!-- CONTENEDOR PRINCIPAL -->
+    <div class="flex flex-1 overflow-hidden">
+        <!-- BARRA LATERAL (Escritorio) -->
+        <aside class="hidden md:flex flex-col w-64 bg-black p-6 space-y-6">
+            <div class="flex items-center space-x-2 text-xl font-bold text-white">
+                <i class="fa-brands fa-spotify text-[#1db954] text-3xl"></i>
+                <span>SpotiFree</span>
+            </div>
+            <nav class="space-y-4 text-sm font-semibold text-gray-400">
+                <a href="#" onclick="switchTab('home')" id="nav-home" class="flex items-center space-x-4 text-white hover:text-white transition"><i class="fa-solid fa-house text-lg"></i><span>Inicio</span></a>
+                <a href="#" onclick="switchTab('search')" id="nav-search" class="flex items-center space-x-4 hover:text-white transition"><i class="fa-solid fa-magnifying-glass text-lg"></i><span>Buscar</span></a>
+                <a href="#" onclick="switchTab('library')" id="nav-library" class="flex items-center space-x-4 hover:text-white transition"><i class="fa-solid fa-book text-lg"></i><span>Tus Me Gusta</span></a>
+            </nav>
+        </aside>
+
+        <!-- CONTENIDO CENTRAL -->
+        <main class="flex-1 bg-[#121212] rounded-lg m-2 mb-20 md:mb-24 overflow-y-auto p-4 md:p-8 flex flex-col">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center space-x-3 w-full md:w-96 bg-[#242424] rounded-full px-4 py-2 border border-transparent focus-within:border-white transition">
+                    <i class="fa-solid fa-magnifying-glass text-gray-400"></i>
+                    <input type="text" id="search-input" placeholder="¿Qué quieres reproducir?" class="bg-transparent w-full text-white focus:outline-none text-sm" onkeydown="if(event.key==='Enter') searchMusic()">
+                </div>
+            </div>
+
+            <div id="view-content" class="flex-1">
+                <h2 id="view-title" class="text-2xl font-bold mb-4">Éxitos del Momento</h2>
+                <div id="tracks-grid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4"></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- REPRODUCTOR INFERIOR -->
+    <footer class="fixed bottom-0 left-0 right-0 h-20 bg-black border-t border-[#282828] px-4 flex items-center justify-between z-50">
+        <div class="flex items-center space-x-3 w-1/3">
+            <img id="player-thumb" src="https://via.placeholder.com/56" class="w-14 h-14 rounded object-cover bg-[#282828]" alt="">
+            <div class="truncate">
+                <h4 id="player-title" class="text-sm font-semibold truncate text-white">Selecciona una canción</h4>
+                <p id="player-artist" class="text-xs text-gray-400 truncate">SpotiFree</p>
+            </div>
+            <button onclick="toggleFavoriteCurrent()" class="text-gray-400 hover:text-white ml-2"><i id="player-fav-icon" class="fa-regular fa-heart"></i></button>
+        </div>
+
+        <div class="flex flex-col items-center w-1/3 space-y-1">
+            <div class="flex items-center space-x-6 text-gray-400">
+                <button onclick="prevTrack()" class="hover:text-white"><i class="fa-solid fa-backward-step text-lg"></i></button>
+                <button onclick="togglePlay()" id="btn-play" class="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition"><i class="fa-solid fa-play text-sm ml-0.5"></i></button>
+                <button onclick="nextTrack()" class="hover:text-white"><i class="fa-solid fa-forward-step text-lg"></i></button>
+            </div>
+            <div class="flex items-center space-x-2 w-full max-w-md text-xs text-gray-400">
+                <span id="current-time">0:00</span>
+                <input type="range" id="progress-bar" value="0" min="0" max="100" class="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer" oninput="seekAudio(this.value)">
+                <span id="duration">0:00</span>
+            </div>
+        </div>
+
+        <div class="hidden md:flex items-center justify-end space-x-3 w-1/3 text-gray-400">
+            <i class="fa-solid fa-volume-high text-sm"></i>
+            <input type="range" id="volume-bar" value="80" min="0" max="100" class="w-24 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer" oninput="setVolume(this.value)">
+        </div>
+    </footer>
+
+    <!-- NAVEGACIÓN MÓVIL INFERIOR -->
+    <div class="md:hidden fixed bottom-20 left-0 right-0 bg-black/90 backdrop-blur border-t border-[#282828] flex justify-around py-3 text-xs text-gray-400 z-40">
+        <button onclick="switchTab('home')" class="flex flex-col items-center text-white"><i class="fa-solid fa-house text-lg"></i><span>Inicio</span></button>
+        <button onclick="switchTab('search')" class="flex flex-col items-center hover:text-white"><i class="fa-solid fa-magnifying-glass text-lg"></i><span>Buscar</span></button>
+        <button onclick="switchTab('library')" class="flex flex-col items-center hover:text-white"><i class="fa-solid fa-book text-lg"></i><span>Favoritos</span></button>
+    </div>
+
+    <!-- REPRODUCTOR YOUTUBE OCULTO -->
+    <div id="youtube-player" class="hidden"></div>
+
+    <script>
+        // Lista de servidores de respaldo oficiales de Piped para evitar caídas
+        const PIPED_INSTANCES = [
+            'https://pipedapi.kavin.rocks',
+            'https://pipedapi.r4fo.com',
+            'https://pipedapi.privacy.com.de',
+            'https://pipedapi.projectsegfau.lt'
+        ];
+
+        let player, currentQueue = [], currentIndex = 0, isPlaying = false, activeTab = 'home', progressInterval;
+        let favorites = JSON.parse(localStorage.getItem('spotifree_favs') || '[]');
+
+        const tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        document.head.appendChild(tag);
+
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('youtube-player', {
+                height: '0', width: '0',
+                events: { 'onReady': () => loadDefaultMusic(), 'onStateChange': onPlayerStateChange }
+            });
+        }
+
+        function onPlayerStateChange(event) {
+            if (event.data == YT.PlayerState.PLAYING) {
+                isPlaying = true;
+                document.getElementById('btn-play').innerHTML = '<i class="fa-solid fa-pause text-sm"></i>';
+                startProgressTimer();
+            } else if (event.data == YT.PlayerState.PAUSED) {
+                isPlaying = false;
+                document.getElementById('btn-play').innerHTML = '<i class="fa-solid fa-play text-sm ml-0.5"></i>';
+                stopProgressTimer();
+            } else if (event.data == YT.PlayerState.ENDED) {
+                nextTrack();
+            }
+        }
+
+        // Función inteligente con rotación de servidores
+        async function fetchFromPiped(endpoint) {
+            for (let instance of PIPED_INSTANCES) {
+                try {
+                    const res = await fetch(`${instance}${endpoint}`);
+                    if (res.ok) {
+                        return await res.json();
+                    }
+                } catch (e) {
+                    console.warn(`Instancia ${instance} no disponible, probando siguiente...`);
+                }
+            }
+            throw new Error('Todas las instancias están ocupadas.');
+        }
+
+        async function loadDefaultMusic() {
+            try {
+                const data = await fetchFromPiped('/search?q=Top+hits+music&filter=music');
+                if (data.items) {
+                    currentQueue = data.items.filter(item => item.type === 'stream');
+                    renderTracks(currentQueue);
+                }
+            } catch (e) {
+                renderTracks([]);
+            }
+        }
+
+        async function searchMusic() {
+            const query = document.getElementById('search-input').value.trim();
+            if (!query) return;
+            switchTab('search');
+            document.getElementById('view-title').textContent = `Resultados para: "${query}"`;
+            const grid = document.getElementById('tracks-grid');
+            grid.innerHTML = '<div class="col-span-full text-center text-gray-400 py-10">Buscando canciones...</div>';
+
+            try {
+                const data = await fetchFromPiped(`/search?q=${encodeURIComponent(query)}&filter=music`);
+                if (data.items) {
+                    currentQueue = data.items.filter(item => item.type === 'stream');
+                    renderTracks(currentQueue);
+                } else {
+                    grid.innerHTML = '<div class="col-span-full text-center text-gray-400 py-10">Sin resultados</div>';
+                }
+            } catch (e) {
+                grid.innerHTML = '<div class="col-span-full text-center text-red-400 py-10">Error de conexión. Intenta de nuevo en unos segundos.</div>';
+            }
+        }
+
+        function renderTracks(tracks) {
+            const grid = document.getElementById('tracks-grid');
+            grid.innerHTML = '';
+            if (tracks.length === 0) {
+                grid.innerHTML = '<div class="col-span-full text-center text-gray-400 py-10">No hay canciones disponibles</div>';
+                return;
+            }
+
+            tracks.forEach((track, index) => {
+                const videoId = track.url ? track.url.split('v=')[1] : track.videoId;
+                const title = track.title;
+                const artist = track.uploaderName || track.artist || 'YouTube Music';
+                const thumb = track.thumbnail || (track.thumbnails && track.thumbnails[0].url);
+
+                const card = document.createElement('div');
+                card.className = "bg-[#181818] hover:bg-[#282828] p-4 rounded-md transition group cursor-pointer flex flex-col justify-between";
+                card.innerHTML = `
+                    <div class="relative mb-3">
+                        <img src="${thumb}" class="w-full aspect-square object-cover rounded shadow-md" alt="">
+                        <button onclick="event.stopPropagation(); playTrack(${index})" class="absolute bottom-2 right-2 w-10 h-10 bg-[#1db954] text-black rounded-full flex items-center justify-center shadow-lg opacity-0 group-hover:opacity-100 transition transform hover:scale-105">
+                            <i class="fa-solid fa-play ml-0.5"></i>
+                        </button>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-sm truncate text-white">${title}</h3>
+                        <p class="text-xs text-gray-400 truncate mt-1">${artist}</p>
+                    </div>
+                `;
+                card.onclick = () => playTrack(index);
+                grid.appendChild(card);
+            });
+        }
+
+        function playTrack(index) {
+            currentIndex = index;
+            const track = currentQueue[currentIndex];
+            const videoId = track.url ? track.url.split('v=')[1] : track.videoId;
+            const title = track.title;
+            const artist = track.uploaderName || track.artist || 'YouTube Music';
+            const thumb = track.thumbnail || (track.thumbnails && track.thumbnails[0].url);
+
+            if (player && player.loadVideoById) player.loadVideoById(videoId);
+
+            document.getElementById('player-title').textContent = title;
+            document.getElementById('player-artist').textContent = artist;
+            document.getElementById('player-thumb').src = thumb;
+            updateFavIcon();
+        }
+
+        function togglePlay() {
+            if (!player) return;
+            if (isPlaying) player.pauseVideo();
+            else player.playVideo();
+        }
+
+        function nextTrack() {
+            if (currentQueue.length === 0) return;
+            currentIndex = (currentIndex + 1) % currentQueue.length;
+            playTrack(currentIndex);
+        }
+
+        function prevTrack() {
+            if (currentQueue.length === 0) return;
+            currentIndex = (currentIndex - 1 + currentQueue.length) % currentQueue.length;
+            playTrack(currentIndex);
+        }
+
+        function seekAudio(val) {
+            if (!player || !player.getDuration) return;
+            player.seekTo((val / 100) * player.getDuration(), true);
+        }
+
+        function setVolume(val) {
+            if (player && player.setVolume) player.setVolume(val);
+        }
+
+        function startProgressTimer() {
+            stopProgressTimer();
+            progressInterval = setInterval(() => {
+                if (player && player.getCurrentTime && player.getDuration) {
+                    const current = player.getCurrentTime();
+                    const duration = player.getDuration();
+                    if (duration > 0) {
+                        document.getElementById('progress-bar').value = (current / duration) * 100;
+                        document.getElementById('current-time').textContent = formatTime(current);
+                        document.getElementById('duration').textContent = formatTime(duration);
+                    }
+                }
+            }, 1000);
+        }
+
+        function stopProgressTimer() {
+            if (progressInterval) clearInterval(progressInterval);
+        }
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        }
+
+        function switchTab(tab) {
+            activeTab = tab;
+            ['home', 'search', 'library'].forEach(t => {
+                const el = document.getElementById(`nav-${t}`);
+                if(el) el.classList.toggle('text-white', t === tab);
+            });
+
+            const titleEl = document.getElementById('view-title');
+            if (tab === 'home') {
+                titleEl.textContent = "Éxitos del Momento";
+                loadDefaultMusic();
+            } else if (tab === 'search') {
+                titleEl.textContent = "Buscar Canción";
+                document.getElementById('tracks-grid').innerHTML = '<div class="col-span-full text-center text-gray-400 py-10">Usa el buscador superior para encontrar música.</div>';
+            } else if (tab === 'library') {
+                titleEl.textContent = "Tus Me Gusta";
+                currentQueue = favorites;
+                renderTracks(favorites);
+            }
+        }
+
+        function toggleFavoriteCurrent() {
+            if (currentQueue.length === 0) return;
+            const track = currentQueue[currentIndex];
+            const videoId = track.url ? track.url.split('v=')[1] : track.videoId;
+            const index = favorites.findIndex(f => (f.url && f.url.includes(videoId)) || f.videoId === videoId);
+
+            if (index > -1) favorites.splice(index, 1);
+            else favorites.push(track);
+
+            localStorage.setItem('spotifree_favs', JSON.stringify(favorites));
+            updateFavIcon();
+            if (activeTab === 'library') renderTracks(favorites);
+        }
+
+        function updateFavIcon() {
+            if (currentQueue.length === 0) return;
+            const track = currentQueue[currentIndex];
+            const videoId = track.url ? track.url.split('v=')[1] : track.videoId;
+            const isFav = favorites.some(f => (f.url && f.url.includes(videoId)) || f.videoId === videoId);
+            document.getElementById('player-fav-icon').className = isFav ? "fa-solid fa-heart text-[#1db954]" : "fa-regular fa-heart";
+        }
+    </script>
+</body>
+</html>
