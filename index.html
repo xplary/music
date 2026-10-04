@@ -135,6 +135,8 @@
         let isPlaying = false, isSeeking = false, progressInterval = null;
         let hasPlayed = false, autoSkips = 0, loadWatchdog = null, loadFailed = false;
         const searchCache = new Map();
+        const blockedIds = new Set(JSON.parse(localStorage.getItem('spotifree_blocked') || '[]'));
+        const notBlocked = t => !blockedIds.has(t.videoId);
         let favorites = JSON.parse(localStorage.getItem('spotifree_favs_v2') || '[]');
 
         // ---------- Reproductor: se crea apenas carga la API, sin esperar nada más ----------
@@ -197,7 +199,20 @@
             setStatus(`⚠ Error ${code}: ${ERR_MSG[code] || 'desconocido'}`);
             if (code === 100 || code === 101 || code === 150) {
                 const failed = currentTrack;
-                setTimeout(() => { if (currentTrack === failed) autoAdvance(ERR_MSG[code]); }, 1500);
+                if (!failed) return;
+                blockedIds.add(failed.videoId); // no volver a ofrecerlo
+                try { localStorage.setItem('spotifree_blocked', JSON.stringify([...blockedIds])); } catch (err) {}
+                if (failed.alt) { // la versión alternativa también falló: pasar a la siguiente
+                    setTimeout(() => { if (currentTrack === failed) autoAdvance(ERR_MSG[code]); }, 1200);
+                    return;
+                }
+                setStatus(`⚠ Error ${code}: bloqueado por el dueño. Buscando otra versión...`);
+                setPlayIcon('loading');
+                findAlternative(failed).then(alt => {
+                    if (currentTrack !== failed) return; // el usuario ya eligió otra
+                    if (alt) { playQueue[playIndex] = { ...alt, alt: true }; playTrack(playIndex); }
+                    else autoAdvance(ERR_MSG[code]);
+                });
             }
         }
 
@@ -249,27 +264,66 @@
             };
         }
 
+        // Un video "embeddable" puede igual fallar si tiene restricción de edad o está bloqueado en tu país
+        function isPlayable(i) {
+            if (i.status && i.status.embeddable === false) return false;
+            const cd = i.contentDetails || {};
+            if (cd.contentRating && cd.contentRating.ytRating === 'ytAgeRestricted') return false;
+            const rr = cd.regionRestriction;
+            if (rr) {
+                if (rr.blocked && rr.blocked.includes(REGION)) return false;
+                if (rr.allowed && !rr.allowed.includes(REGION)) return false;
+            }
+            return true;
+        }
+
+        // Verifica en 1 sola llamada (1 unidad de cuota) cuáles videos de una lista sí se pueden reproducir
+        async function filterPlayable(tracks) {
+            if (!tracks.length) return tracks;
+            const data = await ytFetch('videos', {
+                part: 'status,contentDetails', id: tracks.map(t => t.videoId).join(','),
+                fields: 'items(id,status/embeddable,contentDetails(regionRestriction,contentRating))'
+            });
+            const ok = new Set(data.items.filter(isPlayable).map(i => i.id));
+            return tracks.filter(t => ok.has(t.videoId));
+        }
+
+        // Si un video está bloqueado, busca otra versión de la misma canción (audio, lyric, etc.)
+        async function findAlternative(track) {
+            try {
+                const data = await ytFetch('search', {
+                    part: 'snippet', q: `${track.title} ${track.artist} audio`, type: 'video',
+                    videoEmbeddable: 'true', videoSyndicated: 'true', maxResults: 8,
+                    fields: 'items(id/videoId,snippet(title,channelTitle,thumbnails))'
+                });
+                let list = data.items.filter(i => i.id && i.id.videoId).map(normalize)
+                    .filter(t => t.videoId !== track.videoId && notBlocked(t));
+                try { list = await filterPlayable(list); } catch (e) {}
+                return list[0] || null;
+            } catch (e) { console.error(e); return null; }
+        }
+
         async function loadDefaultMusic() {
             if (!checkKey()) return;
-            if (homeCache) { viewTracks = homeCache; renderTracks(viewTracks); return; }
+            if (homeCache) { viewTracks = homeCache.filter(notBlocked); renderTracks(viewTracks); return; }
 
             // Carga instantánea desde el almacenamiento local si es reciente
             try {
-                const saved = JSON.parse(localStorage.getItem('spotifree_home') || 'null');
+                const saved = JSON.parse(localStorage.getItem('spotifree_home_v2') || 'null');
                 if (saved && Date.now() - saved.t < HOME_TTL && saved.items.length) {
-                    homeCache = saved.items; viewTracks = homeCache; renderTracks(viewTracks); return;
+                    homeCache = saved.items.filter(notBlocked); viewTracks = homeCache; renderTracks(viewTracks); return;
                 }
             } catch (e) {}
 
             showMessage('Cargando música...');
             try {
                 const data = await ytFetch('videos', {
-                    part: 'snippet,status', chart: 'mostPopular', videoCategoryId: '10',
+                    part: 'snippet,status,contentDetails', chart: 'mostPopular', videoCategoryId: '10',
                     regionCode: REGION, maxResults: 50,
-                    fields: 'items(id,snippet(title,channelTitle,thumbnails),status/embeddable)' // respuesta más liviana
+                    fields: 'items(id,snippet(title,channelTitle,thumbnails),status/embeddable,contentDetails(regionRestriction,contentRating))'
                 });
-                homeCache = data.items.filter(i => i.status && i.status.embeddable).map(normalize);
-                try { localStorage.setItem('spotifree_home', JSON.stringify({ t: Date.now(), items: homeCache })); } catch (e) {}
+                homeCache = data.items.filter(isPlayable).map(normalize).filter(notBlocked);
+                try { localStorage.setItem('spotifree_home_v2', JSON.stringify({ t: Date.now(), items: homeCache })); } catch (e) {}
                 if (activeTab !== 'home') return;
                 viewTracks = homeCache; renderTracks(viewTracks);
             } catch (e) { console.error(e); showMessage('Error: ' + e.message, true); }
@@ -283,7 +337,7 @@
             if (!checkKey()) return;
 
             const key = query.toLowerCase();
-            if (searchCache.has(key)) { viewTracks = searchCache.get(key); renderTracks(viewTracks); return; } // repetida = gratis e instantánea
+            if (searchCache.has(key)) { viewTracks = searchCache.get(key).filter(notBlocked); renderTracks(viewTracks); return; }
 
             showMessage('Buscando canciones...');
             try {
@@ -292,8 +346,10 @@
                     videoEmbeddable: 'true', videoSyndicated: 'true', maxResults: 25,
                     fields: 'items(id/videoId,snippet(title,channelTitle,thumbnails))'
                 });
+                let list = data.items.filter(i => i.id && i.id.videoId).map(normalize).filter(notBlocked);
+                try { list = await filterPlayable(list); } catch (e) { console.warn('No se pudo verificar reproducibilidad', e); }
                 if (activeTab !== 'search') return;
-                viewTracks = data.items.filter(i => i.id && i.id.videoId).map(normalize);
+                viewTracks = list;
                 searchCache.set(key, viewTracks);
                 if (viewTracks.length === 0) showMessage('Sin resultados'); else renderTracks(viewTracks);
             } catch (e) { console.error(e); showMessage('Error: ' + e.message, true); }
