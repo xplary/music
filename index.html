@@ -135,9 +135,15 @@
         let isPlaying = false, isSeeking = false, progressInterval = null;
         let hasPlayed = false, autoSkips = 0, loadWatchdog = null, loadFailed = false;
         const searchCache = new Map();
-        const failedIds = new Set(); // solo durante esta sesión: para atenuar tarjetas que fallaron
-        // Limpieza única de datos de versiones anteriores que podían dejar la lista vacía o bloqueada
-        try { ['spotifree_blocked', 'spotifree_home_v2', 'spotifree_home'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+        const failedIds = new Set();   // solo esta sesión: tarjetas sin solución, se atenúan
+        const altCache = new Map();    // solo esta sesión: videoId bloqueado -> versión alternativa (o null)
+        // Limpieza única de datos de versiones anteriores (se hace una sola vez)
+        try {
+            if (!localStorage.getItem('spotifree_cleaned_v3')) {
+                ['spotifree_blocked', 'spotifree_home_v2', 'spotifree_home'].forEach(k => localStorage.removeItem(k));
+                localStorage.setItem('spotifree_cleaned_v3', '1');
+            }
+        } catch (e) {}
         let favorites = JSON.parse(localStorage.getItem('spotifree_favs_v2') || '[]');
 
         // ---------- Reproductor: se crea apenas carga la API, sin esperar nada más ----------
@@ -196,11 +202,51 @@
             console.warn('Error del reproductor YouTube:', code);
             loadFailed = true; isPlaying = false;
             clearTimeout(loadWatchdog);
+            const failed = currentTrack;
+            const blocked = code === 100 || code === 101 || code === 150;
+
+            // Video bloqueado por el dueño: buscar UNA vez otra versión de la misma canción
+            if (blocked && failed && !failed.alt && !altCache.has(failed.videoId)) {
+                setStatus(`⚠ Error ${code}: bloqueado por el dueño. Buscando otra versión...`);
+                setPlayIcon('loading');
+                findAlternative(failed).then(alt => {
+                    altCache.set(failed.videoId, alt || null);
+                    if (currentTrack !== failed) return; // mientras tanto elegiste otra canción
+                    if (alt) playTrack(playIndex);       // playTrack usa la versión alternativa
+                    else giveUp(code, failed);
+                });
+                return;
+            }
+            giveUp(code, failed);
+        }
+
+        // Sin solución: avisa y se queda (NO salta a otra canción)
+        function giveUp(code, track) {
             setPlayIcon('play');
-            if (currentTrack) failedIds.add(currentTrack.videoId);
+            if (track) failedIds.add(track.origId || track.videoId);
             highlightPlaying();
-            // No salta sola a otra canción: te avisa y tú eliges
             setStatus(`⚠ Error ${code}: ${ERR_MSG[code] || 'desconocido'}. Prueba otra canción.`);
+        }
+
+        // Busca otra subida de la misma canción; prefiere canales "Topic" (audio oficial, casi siempre incrustable)
+        async function findAlternative(track) {
+            try {
+                const clean = track.title
+                    .replace(/[\(\[][^\)\]]*[\)\]]/g, ' ')
+                    .replace(/official|oficial|video|lyrics?|\bhd\b|4k/gi, ' ')
+                    .replace(/\s+/g, ' ').trim();
+                const data = await ytFetch('search', {
+                    part: 'snippet', q: `${clean} ${track.artist} audio`, type: 'video',
+                    videoEmbeddable: 'true', videoSyndicated: 'true', maxResults: 10,
+                    fields: 'items(id/videoId,snippet(title,channelTitle,thumbnails))'
+                });
+                const items = data.items.filter(i => i.id && i.id.videoId);
+                const isTopic = i => /- Topic$/.test(i.snippet.channelTitle || '');
+                items.sort((x, y) => Number(isTopic(y)) - Number(isTopic(x)));
+                const pick = items.map(normalize)
+                    .find(t => t.videoId !== track.videoId && !failedIds.has(t.videoId));
+                return pick || null;
+            } catch (err) { console.error(err); return null; }
         }
 
         // Avance automático con freno de seguridad: máximo 3 seguidos sin que una canción suene de verdad
@@ -345,7 +391,7 @@
 
         function highlightPlaying() {
             document.querySelectorAll('#tracks-grid [data-vid]').forEach(el => {
-                el.classList.toggle('playing-card', !!currentTrack && el.dataset.vid === currentTrack.videoId);
+                el.classList.toggle('playing-card', !!currentTrack && (el.dataset.vid === currentTrack.videoId || el.dataset.vid === currentTrack.origId));
                 el.classList.toggle('opacity-40', failedIds.has(el.dataset.vid));
             });
         }
@@ -354,8 +400,13 @@
         function playFromView(index) { playQueue = viewTracks.slice(); autoSkips = 0; playTrack(index); }
 
         function playTrack(index) {
-            const track = playQueue[index];
+            let track = playQueue[index];
             if (!track) return;
+            const known = !track.alt && altCache.get(track.videoId);
+            if (known) { // este video ya falló antes: usar su versión alternativa sin esperar el error
+                track = { ...known, alt: true, origId: track.videoId };
+                playQueue[index] = track;
+            }
             playIndex = index; currentTrack = track;
             hasPlayed = false; isPlaying = false; loadFailed = false;
 
