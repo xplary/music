@@ -77,6 +77,7 @@
                     <i class="fa-solid fa-magnifying-glass text-gray-400"></i>
                     <input type="text" id="search-input" placeholder="¿Qué quieres reproducir?" class="bg-transparent w-full text-white focus:outline-none text-sm" onkeydown="if(event.key==='Enter') searchMusic()">
                 </div>
+                <button onclick="runDiagnostic()" title="Diagnóstico del reproductor" class="ml-3 w-10 h-10 shrink-0 rounded-full bg-[#242424] text-gray-400 hover:text-white flex items-center justify-center"><i class="fa-solid fa-stethoscope"></i></button>
             </div>
             <div id="view-content" class="flex-1">
                 <h2 id="view-title" class="text-2xl font-bold mb-4">Éxitos del Momento</h2>
@@ -121,6 +122,23 @@
         <button onclick="switchTab('library')" class="flex flex-col items-center hover:text-white"><i class="fa-solid fa-book text-lg"></i><span>Favoritos</span></button>
     </div>
 
+    <div id="diag-modal" class="hidden fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4">
+        <div class="bg-[#181818] rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <h3 class="text-lg font-bold mb-1"><i class="fa-solid fa-stethoscope mr-2 text-[#1db954]"></i>Diagnóstico del reproductor</h3>
+            <p class="text-xs text-gray-400">Prueba un video oficial de YouTube que siempre se puede incrustar, para saber si el problema es tu navegador/red o son canciones concretas.</p>
+            <div class="flex flex-wrap gap-3 justify-center my-3">
+                <div id="diag-p1" class="w-[200px] h-[200px] bg-black"></div>
+                <div id="diag-p2" class="w-[200px] h-[200px] bg-black"></div>
+            </div>
+            <pre id="diag-output" style="user-select:text" class="text-xs text-gray-300 whitespace-pre-wrap bg-black/40 rounded p-3 min-h-[80px]"></pre>
+            <div class="flex flex-wrap gap-2 mt-4 justify-end text-sm">
+                <button onclick="toggleNoCookie()" class="px-3 py-1.5 rounded-full bg-[#282828] hover:bg-[#3e3e3e]">Modo sin cookies: <span id="diag-nc-state">?</span></button>
+                <button onclick="copyDiag()" class="px-3 py-1.5 rounded-full bg-[#282828] hover:bg-[#3e3e3e]">Copiar informe</button>
+                <button onclick="closeDiag()" class="px-3 py-1.5 rounded-full bg-white text-black font-semibold">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
     <div id="youtube-wrapper"><div id="youtube-player"></div></div>
 
     <script>
@@ -153,6 +171,7 @@
             if (location.protocol.startsWith('http')) vars.origin = location.origin;
             player = new YT.Player('youtube-player', {
                 width: '100%', height: '100%', playerVars: vars,
+                ...(useNoCookie() ? { host: 'https://www.youtube-nocookie.com' } : {}),
                 events: {
                     onReady: () => {
                         playerReady = true;
@@ -525,6 +544,71 @@
         function updateFavIcon() {
             const isFav = !!currentTrack && favorites.some(f => f.videoId === currentTrack.videoId);
             document.getElementById('player-fav-icon').className = isFav ? "fa-solid fa-heart text-[#1db954]" : "fa-regular fa-heart";
+        }
+
+// ---------- Diagnóstico ----------
+        const DIAG_VIDEO = 'M7lc1UVf-VE'; // video de demostración oficial de la API de YouTube (siempre incrustable)
+
+        function useNoCookie() { try { return localStorage.getItem('spotifree_nocookie') === '1'; } catch (e) { return false; } }
+        function setNoCookie(on) { try { localStorage.setItem('spotifree_nocookie', on ? '1' : '0'); } catch (e) {} }
+        function toggleNoCookie() { setNoCookie(!useNoCookie()); location.reload(); }
+        function closeDiag() { document.getElementById('diag-modal').classList.add('hidden'); }
+        function copyDiag() {
+            const t = document.getElementById('diag-output').textContent;
+            if (navigator.clipboard) navigator.clipboard.writeText(t).catch(() => {});
+        }
+        function diagLog(line) { document.getElementById('diag-output').textContent += line + '\n'; }
+
+        function testEmbed(label, host, containerId) {
+            return new Promise(resolve => {
+                if (!(window.YT && YT.Player)) { diagLog(`${label}: ❌ la API de YouTube no cargó`); return resolve('noapi'); }
+                const box = document.getElementById(containerId);
+                box.innerHTML = '<div></div>';
+                let done = false, p = null;
+                const finish = (result, msg) => {
+                    if (done) return; done = true; clearTimeout(timer);
+                    diagLog(`${label}: ${msg}`);
+                    try { if (p) p.destroy(); } catch (e) {}
+                    resolve(result);
+                };
+                const timer = setTimeout(() => finish('timeout', '⏱ sin respuesta en 10 s'), 10000);
+                const vars = { autoplay: 1, mute: 1, playsinline: 1 };
+                if (location.protocol.startsWith('http')) vars.origin = location.origin;
+                const cfg = {
+                    width: 200, height: 200, videoId: DIAG_VIDEO, playerVars: vars,
+                    events: {
+                        onStateChange: ev => { if (ev.data === 1) finish('ok', '✅ reproduce correctamente'); },
+                        onError: ev => finish('error', `❌ Error ${ev.data}: ${ERR_MSG[ev.data] || 'desconocido'}`)
+                    }
+                };
+                if (host) cfg.host = host;
+                try { p = new YT.Player(box.firstChild, cfg); }
+                catch (e) { finish('error', '❌ no se pudo crear el reproductor: ' + e.message); }
+            });
+        }
+
+        async function runDiagnostic() {
+            document.getElementById('diag-modal').classList.remove('hidden');
+            document.getElementById('diag-output').textContent = '';
+            document.getElementById('diag-nc-state').textContent = useNoCookie() ? 'activado' : 'desactivado';
+            diagLog(`Página: ${location.origin} (${location.protocol})`);
+            diagLog(`Navegador: ${navigator.userAgent}${navigator.brave ? ' [Brave]' : ''}`);
+            diagLog(`API de YouTube cargada: ${window.YT && YT.Player ? 'sí' : 'NO'}`);
+            diagLog('Probando el video de prueba oficial...');
+            const r1 = await testEmbed('Prueba 1 (normal)', null, 'diag-p1');
+            const r2 = await testEmbed('Prueba 2 (sin cookies)', 'https://www.youtube-nocookie.com', 'diag-p2');
+            diagLog('--- Conclusión ---');
+            if (r1 === 'noapi') {
+                diagLog('→ La API de YouTube no cargó. Desactiva bloqueadores de anuncios/privacidad para esta página o revisa tu conexión.');
+            } else if (r1 === 'ok') {
+                diagLog('→ El reproductor funciona bien en tu navegador y tu red. El error 150 viene de canciones concretas bloqueadas por sus dueños. Copia este informe y te ajusto la búsqueda para evitarlas.');
+            } else if (r2 === 'ok') {
+                setNoCookie(true);
+                document.getElementById('diag-nc-state').textContent = 'activado';
+                diagLog('→ El modo normal falla pero el modo sin cookies funciona. Lo activé automáticamente: recarga la página con Ctrl+F5.');
+            } else {
+                diagLog('→ Ninguna prueba reproduce, ni siquiera el video de prueba oficial. Algo de tu navegador, extensión, cuenta o red está bloqueando los reproductores de YouTube. Prueba: ventana de incógnito sin extensiones, otro navegador, o datos móviles/otra red (el "Modo restringido" de una red o cuenta provoca justo esto).');
+            }
         }
 
         window.addEventListener('DOMContentLoaded', loadDefaultMusic);
