@@ -41,6 +41,19 @@
         #youtube-wrapper iframe { width: 100%; height: 100%; }
         @media (max-width: 767px) { #youtube-wrapper { bottom: 150px; } }
         .playing-card { outline: 2px solid #1db954; }
+
+        /* Cargador circular del botón play */
+        #btn-play { position: relative; }
+        #btn-play.loading::after {
+            content: ''; position: absolute; inset: -5px; border-radius: 50%;
+            border: 2px solid rgba(29,185,84,.25); border-top-color: #1db954;
+            animation: sf-spin .8s linear infinite;
+        }
+        .sf-spinner {
+            width: 14px; height: 14px; border: 2px solid #000; border-top-color: transparent;
+            border-radius: 50%; animation: sf-spin .7s linear infinite;
+        }
+        @keyframes sf-spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
@@ -120,7 +133,7 @@
         let viewTracks = [], playQueue = [], playIndex = -1, currentTrack = null;
         let activeTab = 'home', homeCache = null;
         let isPlaying = false, isSeeking = false, progressInterval = null;
-        let hasPlayed = false, autoSkips = 0, loadWatchdog = null;
+        let hasPlayed = false, autoSkips = 0, loadWatchdog = null, loadFailed = false;
         const searchCache = new Map();
         let favorites = JSON.parse(localStorage.getItem('spotifree_favs_v2') || '[]');
 
@@ -154,6 +167,8 @@
                 setStatus(currentTrack ? currentTrack.artist : '');
             } else if (e.data === S.BUFFERING) {
                 setPlayIcon('loading');
+            } else if (e.data === S.UNSTARTED || e.data === S.CUED) {
+                if (currentTrack && !hasPlayed && !loadFailed) setPlayIcon('loading');
             } else if (e.data === S.PAUSED) {
                 isPlaying = false; setPlayIcon('play'); stopProgressTimer();
             } else if (e.data === S.ENDED) {
@@ -176,6 +191,7 @@
         function onPlayerError(e) {
             const code = e.data;
             console.warn('Error del reproductor YouTube:', code);
+            loadFailed = true;
             clearTimeout(loadWatchdog);
             setPlayIcon('play');
             setStatus(`⚠ Error ${code}: ${ERR_MSG[code] || 'desconocido'}`);
@@ -199,8 +215,9 @@
         function setStatus(t) { document.getElementById('player-artist').textContent = t; }
         function setPlayIcon(mode) {
             const b = document.getElementById('btn-play');
+            b.classList.toggle('loading', mode === 'loading');
             b.innerHTML = mode === 'pause' ? '<i class="fa-solid fa-pause text-sm"></i>'
-                : mode === 'loading' ? '<i class="fa-solid fa-spinner fa-spin text-sm"></i>'
+                : mode === 'loading' ? '<span class="sf-spinner"></span>'
                 : '<i class="fa-solid fa-play text-sm ml-0.5"></i>';
         }
 
@@ -336,7 +353,7 @@
             const track = playQueue[index];
             if (!track) return;
             playIndex = index; currentTrack = track;
-            hasPlayed = false; isPlaying = false;
+            hasPlayed = false; isPlaying = false; loadFailed = false;
 
             // Feedback inmediato: la interfaz responde antes de que YouTube termine de cargar
             document.getElementById('player-title').textContent = track.title;
