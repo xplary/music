@@ -4,6 +4,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SpotiFree</title>
+
+    <!-- Conexiones tempranas: ahorran cientos de ms al iniciar -->
+    <link rel="preconnect" href="https://www.youtube.com">
+    <link rel="preconnect" href="https://i.ytimg.com">
+    <link rel="preconnect" href="https://www.googleapis.com">
+    <link rel="preconnect" href="https://s.ytimg.com">
+    <link rel="dns-prefetch" href="https://googlevideo.com">
+
+    <!-- La API del reproductor se pide ya, en paralelo con el resto de la página -->
+    <script>
+        window.__ytReady = false;
+        window.onYouTubeIframeAPIReady = function () {
+            window.__ytReady = true;
+            if (window.initPlayer) window.initPlayer();
+        };
+    </script>
+    <script src="https://www.youtube.com/iframe_api" async></script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -14,7 +32,6 @@
         ::-webkit-scrollbar-thumb:hover { background: #3e3e3e; }
         input[type="range"] { accent-color: #1db954; cursor: pointer; }
 
-        /* Reproductor de YouTube: dentro de la pantalla (YouTube lo exige) pero invisible por defecto */
         #youtube-wrapper {
             position: fixed; right: 12px; bottom: 100px; width: 260px; height: 146px;
             z-index: 30; opacity: 0; pointer-events: none; border-radius: 8px; overflow: hidden;
@@ -29,7 +46,6 @@
 <body class="h-screen flex flex-col overflow-hidden">
 
     <div class="flex flex-1 overflow-hidden">
-        <!-- BARRA LATERAL -->
         <aside class="hidden md:flex flex-col w-64 bg-black p-6 space-y-6">
             <div class="flex items-center space-x-2 text-xl font-bold text-white">
                 <i class="fa-brands fa-spotify text-[#1db954] text-3xl"></i>
@@ -42,7 +58,6 @@
             </nav>
         </aside>
 
-        <!-- CONTENIDO -->
         <main class="flex-1 bg-[#121212] rounded-lg m-2 mb-36 md:mb-24 overflow-y-auto p-4 md:p-8 flex flex-col">
             <div class="flex items-center justify-between mb-6">
                 <div class="flex items-center space-x-3 w-full md:w-96 bg-[#242424] rounded-full px-4 py-2 border border-transparent focus-within:border-white transition">
@@ -57,7 +72,6 @@
         </main>
     </div>
 
-    <!-- REPRODUCTOR INFERIOR -->
     <footer class="fixed bottom-0 left-0 right-0 h-20 bg-black border-t border-[#282828] px-4 flex items-center justify-between z-50">
         <div class="flex items-center space-x-3 w-1/3">
             <img id="player-thumb" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='56' height='56'><rect width='56' height='56' fill='%23282828'/></svg>" class="w-14 h-14 rounded object-cover bg-[#282828]" alt="">
@@ -88,97 +102,90 @@
         </div>
     </footer>
 
-    <!-- NAV MÓVIL -->
     <div class="md:hidden fixed bottom-20 left-0 right-0 bg-black/90 backdrop-blur border-t border-[#282828] flex justify-around py-3 text-xs text-gray-400 z-40">
         <button onclick="switchTab('home')" class="flex flex-col items-center text-white"><i class="fa-solid fa-house text-lg"></i><span>Inicio</span></button>
         <button onclick="switchTab('search')" class="flex flex-col items-center hover:text-white"><i class="fa-solid fa-magnifying-glass text-lg"></i><span>Buscar</span></button>
         <button onclick="switchTab('library')" class="flex flex-col items-center hover:text-white"><i class="fa-solid fa-book text-lg"></i><span>Favoritos</span></button>
     </div>
 
-    <!-- REPRODUCTOR YOUTUBE -->
     <div id="youtube-wrapper"><div id="youtube-player"></div></div>
 
     <script>
         const YT_API_KEY = 'AIzaSyCZWkUGQDPIrj6mrwQk6v6ravHly2_0jsw';
         const REGION = 'PE';
+        const HOME_TTL = 30 * 60 * 1000; // el Inicio se guarda 30 min
 
         // ---------- Estado ----------
-        let player = null, playerReady = false;
-        let viewTracks = [];          // lo que se ve en pantalla
-        let playQueue = [];           // la cola que realmente suena (no cambia al navegar)
-        let playIndex = -1;
-        let currentTrack = null;
-        let activeTab = 'home';
-        let homeCache = null;
+        let player = null, playerReady = false, pendingVideoId = null;
+        let viewTracks = [], playQueue = [], playIndex = -1, currentTrack = null;
+        let activeTab = 'home', homeCache = null;
         let isPlaying = false, isSeeking = false, errorStreak = 0, progressInterval = null;
+        const searchCache = new Map();
         let favorites = JSON.parse(localStorage.getItem('spotifree_favs_v2') || '[]');
 
-        // ---------- Reproductor de YouTube ----------
-        const tag = document.createElement('script');
-        tag.src = "https://www.youtube.com/iframe_api";
-        document.head.appendChild(tag);
-
-        function onYouTubeIframeAPIReady() {
+        // ---------- Reproductor: se crea apenas carga la API, sin esperar nada más ----------
+        window.initPlayer = function () {
+            if (player) return;
             const vars = { playsinline: 1, controls: 1, rel: 0, modestbranding: 1 };
             if (location.protocol.startsWith('http')) vars.origin = location.origin;
             player = new YT.Player('youtube-player', {
-                width: '100%', height: '100%',
-                playerVars: vars,
+                width: '100%', height: '100%', playerVars: vars,
                 events: {
-                    onReady: () => { playerReady = true; player.setVolume(Number(document.getElementById('volume-bar').value)); },
+                    onReady: () => {
+                        playerReady = true;
+                        player.setVolume(Number(document.getElementById('volume-bar').value));
+                        // Si el usuario ya había elegido una canción mientras cargaba, suena de inmediato
+                        if (pendingVideoId) { player.loadVideoById(pendingVideoId); pendingVideoId = null; }
+                    },
                     onStateChange: onPlayerStateChange,
                     onError: onPlayerError
                 }
             });
-        }
+        };
+        if (window.__ytReady) window.initPlayer();
 
         function onPlayerStateChange(e) {
             const S = YT.PlayerState;
             if (e.data === S.PLAYING) {
                 isPlaying = true; errorStreak = 0;
-                setPlayIcon(true); startProgressTimer();
+                setPlayIcon('pause'); startProgressTimer();
                 setStatus(currentTrack ? currentTrack.artist : '');
+            } else if (e.data === S.BUFFERING) {
+                setPlayIcon('loading');
             } else if (e.data === S.PAUSED) {
-                isPlaying = false; setPlayIcon(false); stopProgressTimer();
+                isPlaying = false; setPlayIcon('play'); stopProgressTimer();
             } else if (e.data === S.ENDED) {
-                isPlaying = false; setPlayIcon(false); stopProgressTimer();
+                isPlaying = false; setPlayIcon('play'); stopProgressTimer();
                 nextTrack();
             }
         }
 
-        // Errores: 2 parámetro inválido, 5 error HTML5, 100 no existe, 101/150 incrustación bloqueada, 153 sin origen válido
         function onPlayerError(e) {
             const code = e.data;
             console.warn('Error del reproductor YouTube:', code);
-            if (code === 153) {
-                setStatus('⚠ Abre la página desde http://localhost o GitHub Pages (no con doble clic).');
-                return;
-            }
+            if (code === 153) { setStatus('⚠ Abre la página desde http://localhost o GitHub Pages.'); setPlayIcon('play'); return; }
             errorStreak++;
-            // Solo salta al siguiente si es un video bloqueado, y máximo 3 seguidos
             if ((code === 100 || code === 101 || code === 150) && errorStreak <= 3 && playQueue.length > 1) {
-                setStatus('Este video no permite reproducción externa, probando el siguiente...');
-                const failedTrack = currentTrack;
-                setTimeout(() => { if (currentTrack === failedTrack) nextTrack(); }, 1200);
+                setStatus('Video bloqueado por YouTube, probando el siguiente...');
+                const failed = currentTrack;
+                setTimeout(() => { if (currentTrack === failed) nextTrack(); }, 600);
             } else {
-                setStatus('⚠ No se pudo reproducir esta canción. Prueba con otra.');
-                setPlayIcon(false);
+                setStatus('⚠ No se pudo reproducir esta canción.');
+                setPlayIcon('play');
             }
         }
 
-        function setStatus(text) { document.getElementById('player-artist').textContent = text; }
-        function setPlayIcon(playing) {
-            document.getElementById('btn-play').innerHTML = playing
-                ? '<i class="fa-solid fa-pause text-sm"></i>'
+        function setStatus(t) { document.getElementById('player-artist').textContent = t; }
+        function setPlayIcon(mode) {
+            const b = document.getElementById('btn-play');
+            b.innerHTML = mode === 'pause' ? '<i class="fa-solid fa-pause text-sm"></i>'
+                : mode === 'loading' ? '<i class="fa-solid fa-spinner fa-spin text-sm"></i>'
                 : '<i class="fa-solid fa-play text-sm ml-0.5"></i>';
         }
 
         // ---------- YouTube Data API ----------
         function checkKey() {
-            if (!YT_API_KEY || YT_API_KEY.startsWith('PEGA')) {
-                showMessage('Falta configurar tu API Key de YouTube (const YT_API_KEY).', true);
-                return false;
-            }
+            if (!YT_API_KEY || YT_API_KEY.startsWith('PEGA')) { showMessage('Falta configurar tu API Key de YouTube.', true); return false; }
             return true;
         }
 
@@ -191,7 +198,7 @@
             return data;
         }
 
-        function decodeHtml(str) { const t = document.createElement('textarea'); t.innerHTML = str; return t.value; }
+        function decodeHtml(s) { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; }
 
         function normalize(item) {
             const videoId = typeof item.id === 'string' ? item.id : item.id.videoId;
@@ -200,28 +207,34 @@
                 videoId,
                 title: decodeHtml(sn.title),
                 artist: decodeHtml(sn.channelTitle || 'YouTube').replace(/ - Topic$/, ''),
-                thumb: (t.high || t.medium || t.default || {}).url || ''
+                thumb: (t.medium || t.high || t.default || {}).url || '' // miniatura mediana: pesa mucho menos
             };
         }
 
         async function loadDefaultMusic() {
             if (!checkKey()) return;
             if (homeCache) { viewTracks = homeCache; renderTracks(viewTracks); return; }
+
+            // Carga instantánea desde el almacenamiento local si es reciente
+            try {
+                const saved = JSON.parse(localStorage.getItem('spotifree_home') || 'null');
+                if (saved && Date.now() - saved.t < HOME_TTL && saved.items.length) {
+                    homeCache = saved.items; viewTracks = homeCache; renderTracks(viewTracks); return;
+                }
+            } catch (e) {}
+
             showMessage('Cargando música...');
             try {
                 const data = await ytFetch('videos', {
                     part: 'snippet,status', chart: 'mostPopular', videoCategoryId: '10',
-                    regionCode: REGION, maxResults: 50
+                    regionCode: REGION, maxResults: 50,
+                    fields: 'items(id,snippet(title,channelTitle,thumbnails),status/embeddable)' // respuesta más liviana
                 });
-                // Solo videos que YouTube permite reproducir fuera de su web
                 homeCache = data.items.filter(i => i.status && i.status.embeddable).map(normalize);
+                try { localStorage.setItem('spotifree_home', JSON.stringify({ t: Date.now(), items: homeCache })); } catch (e) {}
                 if (activeTab !== 'home') return;
-                viewTracks = homeCache;
-                renderTracks(viewTracks);
-            } catch (e) {
-                console.error(e);
-                showMessage('Error: ' + e.message, true);
-            }
+                viewTracks = homeCache; renderTracks(viewTracks);
+            } catch (e) { console.error(e); showMessage('Error: ' + e.message, true); }
         }
 
         async function searchMusic() {
@@ -230,20 +243,22 @@
             switchTab('search', true);
             document.getElementById('view-title').textContent = `Resultados para: "${query}"`;
             if (!checkKey()) return;
+
+            const key = query.toLowerCase();
+            if (searchCache.has(key)) { viewTracks = searchCache.get(key); renderTracks(viewTracks); return; } // repetida = gratis e instantánea
+
             showMessage('Buscando canciones...');
             try {
                 const data = await ytFetch('search', {
                     part: 'snippet', q: query, type: 'video', videoCategoryId: '10',
-                    videoEmbeddable: 'true', videoSyndicated: 'true', maxResults: 25
+                    videoEmbeddable: 'true', videoSyndicated: 'true', maxResults: 25,
+                    fields: 'items(id/videoId,snippet(title,channelTitle,thumbnails))'
                 });
                 if (activeTab !== 'search') return;
                 viewTracks = data.items.filter(i => i.id && i.id.videoId).map(normalize);
-                if (viewTracks.length === 0) showMessage('Sin resultados');
-                else renderTracks(viewTracks);
-            } catch (e) {
-                console.error(e);
-                showMessage('Error: ' + e.message, true);
-            }
+                searchCache.set(key, viewTracks);
+                if (viewTracks.length === 0) showMessage('Sin resultados'); else renderTracks(viewTracks);
+            } catch (e) { console.error(e); showMessage('Error: ' + e.message, true); }
         }
 
         // ---------- UI ----------
@@ -258,16 +273,15 @@
 
         function renderTracks(tracks) {
             const grid = document.getElementById('tracks-grid');
-            grid.innerHTML = '';
             if (tracks.length === 0) { showMessage('No hay canciones disponibles'); return; }
-
+            const frag = document.createDocumentFragment(); // un solo repintado
             tracks.forEach((track, index) => {
                 const card = document.createElement('div');
                 card.dataset.vid = track.videoId;
                 card.className = "bg-[#181818] hover:bg-[#282828] p-4 rounded-md transition group cursor-pointer flex flex-col justify-between";
                 card.innerHTML = `
                     <div class="relative mb-3">
-                        <img class="w-full aspect-square object-cover rounded shadow-md" alt="">
+                        <img class="w-full aspect-square object-cover rounded shadow-md" alt="" loading="lazy" decoding="async">
                         <button class="play-btn absolute bottom-2 right-2 w-10 h-10 bg-[#1db954] text-black rounded-full flex items-center justify-center shadow-lg opacity-0 group-hover:opacity-100 transition transform hover:scale-105">
                             <i class="fa-solid fa-play ml-0.5"></i>
                         </button>
@@ -282,65 +296,67 @@
                 const start = (e) => { e.stopPropagation(); playFromView(index); };
                 card.querySelector('.play-btn').onclick = start;
                 card.onclick = start;
-                grid.appendChild(card);
+                frag.appendChild(card);
             });
+            grid.innerHTML = '';
+            grid.appendChild(frag);
             highlightPlaying();
         }
 
         function highlightPlaying() {
-            document.querySelectorAll('#tracks-grid [data-vid]').forEach(el => {
-                el.classList.toggle('playing-card', !!currentTrack && el.dataset.vid === currentTrack.videoId);
-            });
+            document.querySelectorAll('#tracks-grid [data-vid]').forEach(el =>
+                el.classList.toggle('playing-card', !!currentTrack && el.dataset.vid === currentTrack.videoId));
         }
 
         // ---------- Reproducción ----------
-        // Al hacer clic se "congela" la lista visible como cola de reproducción
-        function playFromView(index) {
-            playQueue = viewTracks.slice();
-            errorStreak = 0;
-            playTrack(index);
-        }
+        function playFromView(index) { playQueue = viewTracks.slice(); errorStreak = 0; playTrack(index); }
 
         function playTrack(index) {
             const track = playQueue[index];
             if (!track) return;
-            playIndex = index;
-            currentTrack = track;
+            playIndex = index; currentTrack = track;
 
+            // Feedback inmediato: la interfaz responde antes de que YouTube termine de cargar
             document.getElementById('player-title').textContent = track.title;
             setStatus(track.artist);
             document.getElementById('player-thumb').src = track.thumb;
             document.getElementById('progress-bar').value = 0;
             document.getElementById('current-time').textContent = '0:00';
             document.getElementById('duration').textContent = '0:00';
-            updateFavIcon();
-            highlightPlaying();
+            setPlayIcon('loading');
+            updateFavIcon(); highlightPlaying(); updateMediaSession();
 
-            if (!playerReady) { setStatus('Cargando reproductor, intenta de nuevo en un segundo...'); return; }
-            player.loadVideoById(track.videoId);
+            if (playerReady) player.loadVideoById(track.videoId);
+            else pendingVideoId = track.videoId; // se reproducirá solo en cuanto el reproductor esté listo
         }
 
         function togglePlay() {
             if (!playerReady || !currentTrack) return;
             if (isPlaying) player.pauseVideo(); else player.playVideo();
         }
-
-        function nextTrack() {
-            if (playQueue.length === 0) return;
-            playTrack((playIndex + 1) % playQueue.length);
-        }
-
+        function nextTrack() { if (playQueue.length) playTrack((playIndex + 1) % playQueue.length); }
         function prevTrack() {
-            if (playQueue.length === 0) return;
-            // Si ya pasaron 3s, reinicia la canción; si no, va a la anterior
+            if (!playQueue.length) return;
             if (playerReady && player.getCurrentTime && player.getCurrentTime() > 3) { player.seekTo(0, true); return; }
             playTrack((playIndex - 1 + playQueue.length) % playQueue.length);
         }
-
-        function setVolume(val) { if (playerReady) player.setVolume(Number(val)); }
+        function setVolume(v) { if (playerReady) player.setVolume(Number(v)); }
         function toggleVideo() { document.getElementById('youtube-wrapper').classList.toggle('show'); }
 
-        // Barra de progreso: no se pelea con el usuario mientras la arrastra
+        // Controles del teclado/pantalla de bloqueo del sistema
+        function updateMediaSession() {
+            if (!('mediaSession' in navigator) || !currentTrack) return;
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: currentTrack.title, artist: currentTrack.artist,
+                artwork: [{ src: currentTrack.thumb, sizes: '320x180', type: 'image/jpeg' }]
+            });
+            navigator.mediaSession.setActionHandler('play', togglePlay);
+            navigator.mediaSession.setActionHandler('pause', togglePlay);
+            navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
+            navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+        }
+
+        // ---------- Barra de progreso ----------
         const bar = document.getElementById('progress-bar');
         bar.addEventListener('input', () => {
             isSeeking = true;
@@ -365,11 +381,7 @@
             }, 500);
         }
         function stopProgressTimer() { if (progressInterval) clearInterval(progressInterval); }
-
-        function formatTime(s) {
-            const m = Math.floor(s / 60), sec = Math.floor(s % 60);
-            return `${m}:${sec < 10 ? '0' : ''}${sec}`;
-        }
+        function formatTime(s) { const m = Math.floor(s / 60), x = Math.floor(s % 60); return `${m}:${x < 10 ? '0' : ''}${x}`; }
 
         // ---------- Navegación ----------
         function switchTab(tab, skipLoad = false) {
@@ -379,17 +391,14 @@
                 if (el) el.classList.toggle('text-white', t === tab);
             });
             const titleEl = document.getElementById('view-title');
-            if (tab === 'home') {
-                titleEl.textContent = "Éxitos del Momento";
-                loadDefaultMusic();
-            } else if (tab === 'search') {
+            if (tab === 'home') { titleEl.textContent = "Éxitos del Momento"; loadDefaultMusic(); }
+            else if (tab === 'search') {
                 titleEl.textContent = "Buscar Canción";
                 if (!skipLoad) showMessage('Usa el buscador superior para encontrar música.');
             } else if (tab === 'library') {
                 titleEl.textContent = "Tus Me Gusta";
                 viewTracks = favorites;
-                if (favorites.length === 0) showMessage('Aún no tienes canciones favoritas.');
-                else renderTracks(favorites);
+                if (favorites.length === 0) showMessage('Aún no tienes canciones favoritas.'); else renderTracks(favorites);
             }
         }
 
@@ -402,11 +411,9 @@
             updateFavIcon();
             if (activeTab === 'library') {
                 viewTracks = favorites;
-                if (favorites.length === 0) showMessage('Aún no tienes canciones favoritas.');
-                else renderTracks(favorites);
+                if (favorites.length === 0) showMessage('Aún no tienes canciones favoritas.'); else renderTracks(favorites);
             }
         }
-
         function updateFavIcon() {
             const isFav = !!currentTrack && favorites.some(f => f.videoId === currentTrack.videoId);
             document.getElementById('player-fav-icon').className = isFav ? "fa-solid fa-heart text-[#1db954]" : "fa-regular fa-heart";
