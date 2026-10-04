@@ -119,7 +119,8 @@
         let player = null, playerReady = false, pendingVideoId = null;
         let viewTracks = [], playQueue = [], playIndex = -1, currentTrack = null;
         let activeTab = 'home', homeCache = null;
-        let isPlaying = false, isSeeking = false, errorStreak = 0, progressInterval = null;
+        let isPlaying = false, isSeeking = false, progressInterval = null;
+        let hasPlayed = false, autoSkips = 0, loadWatchdog = null;
         const searchCache = new Map();
         let favorites = JSON.parse(localStorage.getItem('spotifree_favs_v2') || '[]');
 
@@ -147,7 +148,8 @@
         function onPlayerStateChange(e) {
             const S = YT.PlayerState;
             if (e.data === S.PLAYING) {
-                isPlaying = true; errorStreak = 0;
+                hasPlayed = true; isPlaying = true;
+                clearTimeout(loadWatchdog);
                 setPlayIcon('pause'); startProgressTimer();
                 setStatus(currentTrack ? currentTrack.artist : '');
             } else if (e.data === S.BUFFERING) {
@@ -156,23 +158,42 @@
                 isPlaying = false; setPlayIcon('play'); stopProgressTimer();
             } else if (e.data === S.ENDED) {
                 isPlaying = false; setPlayIcon('play'); stopProgressTimer();
-                nextTrack();
+                // Solo cuenta como "terminó" si de verdad sonó y llegó casi al final.
+                // Esto ignora los ENDED falsos que YouTube emite al cambiar de video.
+                let dur = 0, cur = 0;
+                try { dur = player.getDuration(); cur = player.getCurrentTime(); } catch (err) {}
+                if (!hasPlayed || dur <= 0 || cur < dur - 3) { console.warn('ENDED falso ignorado'); return; }
+                autoAdvance('fin de la lista');
             }
         }
+
+        const ERR_MSG = {
+            2: 'parámetro inválido', 5: 'error del reproductor de YouTube',
+            100: 'el video no está disponible', 101: 'el dueño bloqueó la reproducción externa',
+            150: 'el dueño bloqueó la reproducción externa', 153: 'abre la página por http:// o GitHub Pages'
+        };
 
         function onPlayerError(e) {
             const code = e.data;
             console.warn('Error del reproductor YouTube:', code);
-            if (code === 153) { setStatus('⚠ Abre la página desde http://localhost o GitHub Pages.'); setPlayIcon('play'); return; }
-            errorStreak++;
-            if ((code === 100 || code === 101 || code === 150) && errorStreak <= 3 && playQueue.length > 1) {
-                setStatus('Video bloqueado por YouTube, probando el siguiente...');
+            clearTimeout(loadWatchdog);
+            setPlayIcon('play');
+            setStatus(`⚠ Error ${code}: ${ERR_MSG[code] || 'desconocido'}`);
+            if (code === 100 || code === 101 || code === 150) {
                 const failed = currentTrack;
-                setTimeout(() => { if (currentTrack === failed) nextTrack(); }, 600);
-            } else {
-                setStatus('⚠ No se pudo reproducir esta canción.');
-                setPlayIcon('play');
+                setTimeout(() => { if (currentTrack === failed) autoAdvance(ERR_MSG[code]); }, 1500);
             }
+        }
+
+        // Avance automático con freno de seguridad: máximo 3 seguidos sin que una canción suene de verdad
+        function autoAdvance(reason) {
+            autoSkips++;
+            if (autoSkips > 3 || playQueue.length < 2) {
+                setStatus('⚠ Reproducción detenida: ' + reason);
+                setPlayIcon('play');
+                return;
+            }
+            nextTrack(true);
         }
 
         function setStatus(t) { document.getElementById('player-artist').textContent = t; }
@@ -309,12 +330,13 @@
         }
 
         // ---------- Reproducción ----------
-        function playFromView(index) { playQueue = viewTracks.slice(); errorStreak = 0; playTrack(index); }
+        function playFromView(index) { playQueue = viewTracks.slice(); autoSkips = 0; playTrack(index); }
 
         function playTrack(index) {
             const track = playQueue[index];
             if (!track) return;
             playIndex = index; currentTrack = track;
+            hasPlayed = false; isPlaying = false;
 
             // Feedback inmediato: la interfaz responde antes de que YouTube termine de cargar
             document.getElementById('player-title').textContent = track.title;
@@ -327,15 +349,28 @@
             updateFavIcon(); highlightPlaying(); updateMediaSession();
 
             if (playerReady) player.loadVideoById(track.videoId);
-            else pendingVideoId = track.videoId; // se reproducirá solo en cuanto el reproductor esté listo
+            else pendingVideoId = track.videoId; // suena solo cuando el reproductor esté listo
+
+            // Si en 6 s no arrancó (p. ej. el navegador bloqueó el autoplay), avisa en vez de quedarse colgado
+            clearTimeout(loadWatchdog);
+            loadWatchdog = setTimeout(() => {
+                if (!isPlaying && currentTrack === track) {
+                    setStatus('Toca ▶ para iniciar la canción');
+                    setPlayIcon('play');
+                }
+            }, 6000);
         }
 
         function togglePlay() {
             if (!playerReady || !currentTrack) return;
             if (isPlaying) player.pauseVideo(); else player.playVideo();
         }
-        function nextTrack() { if (playQueue.length) playTrack((playIndex + 1) % playQueue.length); }
+        function nextTrack(auto) {
+            if (auto !== true) autoSkips = 0; // el usuario manda: reinicia el freno
+            if (playQueue.length) playTrack((playIndex + 1) % playQueue.length);
+        }
         function prevTrack() {
+            autoSkips = 0;
             if (!playQueue.length) return;
             if (playerReady && player.getCurrentTime && player.getCurrentTime() > 3) { player.seekTo(0, true); return; }
             playTrack((playIndex - 1 + playQueue.length) % playQueue.length);
@@ -352,8 +387,8 @@
             });
             navigator.mediaSession.setActionHandler('play', togglePlay);
             navigator.mediaSession.setActionHandler('pause', togglePlay);
-            navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
-            navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+            navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
+            navigator.mediaSession.setActionHandler('previoustrack', () => prevTrack());
         }
 
         // ---------- Barra de progreso ----------
@@ -374,6 +409,7 @@
                 if (!playerReady || isSeeking) return;
                 const cur = player.getCurrentTime(), dur = player.getDuration();
                 if (dur > 0) {
+                    if (cur > 10) autoSkips = 0;
                     bar.value = (cur / dur) * 100;
                     document.getElementById('current-time').textContent = formatTime(cur);
                     document.getElementById('duration').textContent = formatTime(dur);
